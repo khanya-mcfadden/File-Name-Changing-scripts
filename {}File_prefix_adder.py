@@ -1,10 +1,13 @@
 import os
 
-# ===== SET YOUR PREFIX HERE =====
-PREFIX = "NewPrefix_"
-# =================================
-
+# Get the folder where the script is located
 directory = os.path.dirname(os.path.abspath(__file__))
+
+# Get folder name and remove spaces
+folder_name = os.path.basename(directory).replace(" ", "")
+
+# Create prefix
+PREFIX = folder_name + "_"
 
 renamed_count = 0
 skipped_count = 0
