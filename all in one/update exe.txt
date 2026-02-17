@@ -1,0 +1,1 @@
+for any changes to the py file run the following python -m PyInstaller --onefile --windowed FileRenamer.py
