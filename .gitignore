@@ -1,5 +1,4 @@
 build/
-dist/
 *.spec
 *.pkg
 __pycache__/
