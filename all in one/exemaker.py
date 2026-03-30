@@ -20,6 +20,8 @@ import re
 import shutil
 import subprocess
 import sys
+from PIL import Image
+
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -117,6 +119,22 @@ def clean():
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
+# ── Icon helper ─────────────────────
+def ensure_icon():
+    ico_path = "icon.ico"
+    if os.path.isfile(ico_path):
+        return ico_path
+
+    for img_name in ["icon.png", "icon.jpg", "icon.jpeg"]:
+        if os.path.isfile(img_name):
+            img = Image.open(img_name)
+            img = img.convert("RGBA")
+            img.save(ico_path, format="ICO", sizes=[(256, 256)])
+            print(f" Converted {img_name} -> {ico_path}")
+            return ico_path
+
+    return None 
+
 def build(version):
     vs = version_str(version)
 
@@ -127,13 +145,14 @@ def build(version):
         "--name", APP_NAME,                  # internal exe name
         "--version-file", VERSION_INFO_FILE, # Windows metadata
     ]
-
+    
     # Attach icon only when the file actually exists
-    if os.path.isfile(ICON_FILE):
-        cmd += ["--icon", ICON_FILE]
-        print(f"  Icon     {ICON_FILE}")
+    icon_path = ensure_icon()
+    if icon_path:
+        cmd += ["--icon", icon_path]
+        print(f" Icon {icon_path}")
     else:
-        print(f"  Icon     skipped ({ICON_FILE} not found – place it here to enable)")
+        print(" Icon skipped (no icon.ico, icon.png, icon.jpg, or icon.jpeg found)")
 
     cmd.append(SCRIPT)
 
