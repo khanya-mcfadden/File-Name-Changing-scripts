@@ -59,18 +59,144 @@ def run_add_prefix(directory, prefix, log):
             skipped += 1
     log(f"\nDone. Renamed: {renamed} | Skipped: {skipped}")
 
+# ── NEW: Dynamic prefix removal logic ─────────────────────────────────────────
+#
+# Pattern syntax understood by parse_removal_pattern():
+#
+#   <fixed_prefix>(N)<trailing>
+#
+#   fixed_prefix  – any literal text before the dynamic segment (may be empty)
+#   (N)           – integer N inside parentheses → remove exactly N characters
+#                   at the position where the dynamic segment starts
+#   trailing      – any literal text immediately after (N) that should also
+#                   be stripped (may be empty)
+#
+# Examples:
+#   "Koikatu_F_(19)"   → fixed="Koikatu_F_",  n=19, trailing=""
+#   "F_(9)_"           → fixed="F_",           n=9,  trailing="_"
+#   "(12)"             → fixed="",             n=12, trailing=""
+#   "RAW_"             → no (N) marker → treated as a plain fixed prefix
+#                        (falls through to the original removal path)
+
+def parse_removal_pattern(pattern):
+    """
+    Parse a removal pattern that may contain a (N) dynamic-length marker.
+
+    Returns a dict with:
+        'fixed'    – literal prefix before the (N) marker (str)
+        'n'        – number of dynamic characters to remove (int or None)
+        'trailing' – literal suffix after the (N) marker (str)
+        'dynamic'  – True when a (N) marker was found, False otherwise
+
+    When 'dynamic' is False the caller should fall back to plain prefix removal.
+    """
+    # Match optional leading text, then (digits), then optional trailing text.
+    # The entire pattern must be consumed – we do not allow anything after
+    # the trailing part so the caller can safely anchor to filename start.
+    m = re.fullmatch(r'(.*?)\((\d+)\)(.*)', pattern)
+    if m:
+        return {
+            'dynamic':  True,
+            'fixed':    m.group(1),   # literal text before (N)
+            'n':        int(m.group(2)),  # characters to skip dynamically
+            'trailing': m.group(3),   # literal text after (N)
+        }
+    # No (N) marker → plain fixed-prefix pattern
+    return {
+        'dynamic':  False,
+        'fixed':    pattern,
+        'n':        None,
+        'trailing': '',
+    }
+
+
+def apply_removal_pattern(filename, parsed):
+    """
+    Apply a parsed removal pattern to a single filename.
+
+    Returns the new filename string if the pattern matched, or None if it
+    did not apply (so the caller can skip / log accordingly).
+
+    Logic:
+        1. The filename must start with `fixed`.
+        2. After `fixed`, skip exactly `n` characters (the dynamic segment).
+        3. The characters immediately following must equal `trailing`.
+        4. Everything from (fixed + n + trailing) onward is kept.
+    """
+    fixed    = parsed['fixed']
+    n        = parsed['n']
+    trailing = parsed['trailing']
+
+    if not parsed['dynamic']:
+        # Plain fixed-prefix removal – same behaviour as the original function
+        if filename.startswith(fixed):
+            return filename[len(fixed):]
+        return None   # pattern doesn't match this filename
+
+    # --- dynamic path ---
+
+    # Step 1: filename must start with the fixed prefix
+    if not filename.startswith(fixed):
+        return None
+
+    # Step 2: measure the removal window
+    removal_start = len(fixed)          # index right after the fixed prefix
+    removal_end   = removal_start + n   # end of the dynamic segment
+
+    # Guard: ensure there are at least n characters available after the prefix
+    if len(filename) < removal_end:
+        return None   # not enough characters – skip safely
+
+    # Step 3: after the dynamic segment, the trailing string must be present
+    after_dynamic = filename[removal_end:]
+    if not after_dynamic.startswith(trailing):
+        return None   # trailing text not found – pattern doesn't match
+
+    # Step 4: build the new filename by cutting out fixed + n_chars + trailing
+    kept = after_dynamic[len(trailing):]   # everything after the trailing text
+    new_name = kept if kept else None      # don't produce an empty filename
+
+    return new_name
+# ── END new dynamic removal logic ─────────────────────────────────────────────
+
+
 def run_remove_prefix(directory, prefix, log):
+    """
+    Remove a prefix (plain or dynamic) from every file in `directory`.
+
+    The `prefix` argument is first passed through parse_removal_pattern().
+    If it contains a (N) marker the dynamic path is used; otherwise the
+    original fixed-string removal runs unchanged.
+    """
     renamed = skipped = 0
-    # Escape the prefix for regex and strip trailing underscore for pattern building
-    escaped = re.escape(prefix)
-    pattern = re.compile(r'^' + escaped)
+
+    # Parse the pattern once; reuse for every file in the directory
+    # NEW: parse_removal_pattern() handles both plain and dynamic patterns
+    parsed = parse_removal_pattern(prefix)
+
+    # Log which mode is active so the user can verify the intent
+    if parsed['dynamic']:
+        log(
+            f"── Pattern parsed  →  fixed='{parsed['fixed']}'  "
+            f"dynamic_chars={parsed['n']}  trailing='{parsed['trailing']}'"
+        )
+
     for filename in os.listdir(directory):
         full_path = os.path.join(directory, filename)
         if not os.path.isfile(full_path):
             continue
-        new_name = pattern.sub('', filename)
-        if new_name == filename:
+
+        # NEW: use apply_removal_pattern() for both dynamic and plain modes
+        new_name = apply_removal_pattern(filename, parsed)
+
+        if new_name is None:
+            # Pattern did not match this file – leave it untouched
             continue
+
+        if new_name == filename:
+            # Nothing would change
+            continue
+
         new_path = os.path.join(directory, new_name)
         if not os.path.exists(new_path):
             os.rename(full_path, new_path)
@@ -79,6 +205,7 @@ def run_remove_prefix(directory, prefix, log):
         else:
             log(f"Skipped (already exists): {new_name}")
             skipped += 1
+
     log(f"\nDone. Renamed: {renamed} | Skipped: {skipped}")
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
@@ -165,14 +292,20 @@ class FileRenamerApp(tk.Tk):
             tip="Leave blank to use the folder name as prefix (adds underscore automatically)."
         )
 
-        # Remove prefix tab
+        # Remove prefix tab – updated tip explains the new (N) syntax
         self._prefix_rem_var = tk.StringVar()
         self._make_prefix_row(
             self.tab_rem,
             "Prefix to remove:",
             self.tab_rem,
             self._prefix_rem_var,
-            tip="Enter the exact prefix (including any underscores) to strip from filenames."
+            # NEW: tip updated to document the dynamic (N) marker syntax
+            tip=(
+                "Enter the exact prefix to strip from filenames.  "
+                "Dynamic removal: use (N) to skip N characters at that position.  "
+                "Examples:  'Koikatu_F_(19)'  strips 'Koikatu_F_' then the next 19 chars;  "
+                "'F_(9)_'  strips 'F_', the next 9 chars, and the trailing '_'."
+            )
         )
 
         # Run button
